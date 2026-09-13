@@ -45,3 +45,10 @@ Import using the format `environment_id:config_id`:
 ```
 terraform import arcane_swarm_config.app_config <environment_id>:<config_id>
 ```
+
+Unlike swarm secrets, the config API returns the stored content, so `data` and
+`labels` are recovered during the import refresh: an import of a config whose
+configuration already matches plans clean instead of forcing a replacement. A
+config holding non-UTF-8 content cannot be represented in a Terraform string;
+the import then warns and leaves `data` unset, which does force a replacement on
+the next apply.

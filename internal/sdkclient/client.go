@@ -1034,6 +1034,17 @@ func EncodeSwarmConfigData(raw string) string {
 	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
+// DecodeSwarmConfigData reverses EncodeSwarmConfigData. Unlike secrets, the
+// config API returns spec.Data on read, so imported configs can recover their
+// plaintext content.
+func DecodeSwarmConfigData(encoded string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 // CreateSwarmConfig POST /environments/{id}/swarm/configs
 func (c *Client) CreateSwarmConfig(ctx context.Context, envID string, body SwarmConfigCreateRequest) (*SwarmConfigSummary, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, path.Join("environments", envID, "swarm", "configs"), body)

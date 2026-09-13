@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"terraform-provider-arcane/internal/sdkclient"
 
@@ -152,14 +153,36 @@ func (r *SwarmConfigResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
+	// A null `data` means this state came from ImportState: `data` is Required,
+	// so a config Terraform created or refreshed always carries it. Everything
+	// under `imported` exists to fill the gaps ImportState leaves, so that the
+	// first plan after an import does not read as a destroy/recreate.
+	imported := state.Data.IsNull() || state.Data.IsUnknown()
+
 	state.Name = types.StringValue(config.Spec.Name)
-	if !state.Labels.IsNull() && !state.Labels.IsUnknown() {
+	// Outside an import, a null labels map means "unconfigured" and must stay
+	// null: adopting server labels there would force a spurious replace.
+	if imported || (!state.Labels.IsNull() && !state.Labels.IsUnknown()) {
 		state.Labels = stringMapToMap(ctx, config.Spec.Labels)
 	}
 	state.VersionIndex = types.Int64Value(config.Version.Index)
 	state.CreatedAt = types.StringValue(config.CreatedAt)
 	state.UpdatedAt = types.StringValue(config.UpdatedAt)
-	// Keep configured plaintext data in state because API only returns encoded content.
+
+	// Keep the configured plaintext when we already have it: the API hands back
+	// exactly the base64 we sent, so re-decoding a known value buys nothing.
+	// Swarm secrets cannot do this at all — their API never returns spec.Data.
+	if imported {
+		if plaintext, ok := decodeSwarmConfigData(config.Spec.Data); ok {
+			state.Data = types.StringValue(plaintext)
+		} else {
+			resp.Diagnostics.AddWarning(
+				"swarm config content unavailable",
+				"The API did not return decodable UTF-8 content for swarm config "+state.ID.ValueString()+
+					". Set `data` in the configuration to match the existing config, otherwise the next apply replaces it.",
+			)
+		}
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -180,6 +203,21 @@ func (r *SwarmConfigResource) Delete(ctx context.Context, req resource.DeleteReq
 		}
 		resp.Diagnostics.AddError("delete swarm config failed", err.Error())
 	}
+}
+
+// decodeSwarmConfigData turns the base64 the API returns back into the
+// plaintext held in state. Content that is not valid UTF-8 (an archive, a
+// binary keystore) has no Terraform string representation, so it reports false
+// rather than writing corrupt state.
+func decodeSwarmConfigData(encoded string) (string, bool) {
+	if encoded == "" {
+		return "", false
+	}
+	plaintext, err := sdkclient.DecodeSwarmConfigData(encoded)
+	if err != nil || !utf8.ValidString(plaintext) {
+		return "", false
+	}
+	return plaintext, true
 }
 
 func (r *SwarmConfigResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
